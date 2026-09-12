@@ -207,6 +207,24 @@ impl Decoder {
 
         #[cfg(target_os = "linux")]
         {
+            #[cfg(target_arch = "aarch64")]
+            {
+                codecs.push(CodecInfo {
+                    name: "h264_rkmpp".to_owned(),
+                    format: H264,
+                    hwdevice: AV_HWDEVICE_TYPE_NONE,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                });
+                codecs.push(CodecInfo {
+                    name: "hevc_rkmpp".to_owned(),
+                    format: H265,
+                    hwdevice: AV_HWDEVICE_TYPE_NONE,
+                    priority: Priority::Best as _,
+                    ..Default::default()
+                });
+            }
+
             codecs.append(&mut vec![
                 CodecInfo {
                     name: "h264".to_owned(),

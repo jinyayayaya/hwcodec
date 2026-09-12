@@ -182,6 +182,9 @@ mod ffmpeg {
             if target_arch == "x86_64" {
                 v.push("z");
             }
+            if target_arch == "aarch64" {
+                v.push("rockchip_mpp");
+            }
             v
         } else if target_os == "macos" || target_os == "ios" {
             ["c++", "m"].to_vec()

@@ -248,6 +248,22 @@ impl Encoder {
             }
             #[cfg(target_os = "linux")]
             {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    codecs.push(CodecInfo {
+                        name: "h264_rkmpp".to_owned(),
+                        format: H264,
+                        priority: Priority::Best as _,
+                        ..Default::default()
+                    });
+                    codecs.push(CodecInfo {
+                        name: "hevc_rkmpp".to_owned(),
+                        format: H265,
+                        priority: Priority::Best as _,
+                        ..Default::default()
+                    });
+                }
+
                 codecs.push(CodecInfo {
                     name: "h264_vaapi".to_owned(),
                     format: H264,

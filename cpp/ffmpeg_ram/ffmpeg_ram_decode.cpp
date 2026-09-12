@@ -89,7 +89,8 @@ public:
     }
     free_decoder();
     const AVCodec *codec = NULL;
-    hwaccel_ = device_type_ != AV_HWDEVICE_TYPE_NONE;
+    bool is_rkmpp = (name_.find("rkmpp") != std::string::npos);
+    hwaccel_ = (device_type_ != AV_HWDEVICE_TYPE_NONE) || is_rkmpp;
     int ret;
     if (!(codec = avcodec_find_decoder_by_name(name_.c_str()))) {
       LOG_ERROR(std::string("avcodec_find_decoder_by_name ") + name_ + " failed");
@@ -102,7 +103,7 @@ public:
 
     c_->flags |= AV_CODEC_FLAG_LOW_DELAY;
     c_->thread_count =
-        device_type_ != AV_HWDEVICE_TYPE_NONE ? 1 : thread_count_;
+        (device_type_ != AV_HWDEVICE_TYPE_NONE && !is_rkmpp) ? 1 : thread_count_;
     c_->thread_type = FF_THREAD_SLICE;
 
     if (name_.find("qsv") != std::string::npos) {
@@ -116,16 +117,18 @@ public:
     }
 
     if (hwaccel_) {
-      ret =
-          av_hwdevice_ctx_create(&hw_device_ctx_, device_type_, NULL, NULL, 0);
-      if (ret < 0) {
-        LOG_ERROR(std::string("av_hwdevice_ctx_create failed, ret = ") + av_err2str(ret));
-        return -1;
-      }
-      c_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
-      if (!check_support()) {
-        LOG_ERROR(std::string("check_support failed"));
-        return -1;
+      if (!is_rkmpp) {
+        ret =
+            av_hwdevice_ctx_create(&hw_device_ctx_, device_type_, NULL, NULL, 0);
+        if (ret < 0) {
+          LOG_ERROR(std::string("av_hwdevice_ctx_create failed, ret = ") + av_err2str(ret));
+          return -1;
+        }
+        c_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
+        if (!check_support()) {
+          LOG_ERROR(std::string("check_support failed"));
+          return -1;
+        }
       }
       if (!(sw_frame_ = av_frame_alloc())) {
         LOG_ERROR(std::string("av_frame_alloc failed"));
@@ -163,12 +166,18 @@ public:
 #endif
 
     if (!data || !length) {
-      LOG_ERROR(std::string("illegal decode parameter"));
-      return -1;
+      pkt_->data = NULL;
+      pkt_->size = 0;
+      return do_decode(obj);
     }
     pkt_->data = (uint8_t *)data;
     pkt_->size = length;
     ret = do_decode(obj);
+    if (ret != 0 && (name_.find("rkmpp") != std::string::npos)) {
+      pkt_->data = NULL;
+      pkt_->size = 0;
+      ret = do_decode(obj);
+    }
     return ret;
   }
 
@@ -178,7 +187,7 @@ private:
     AVFrame *tmp_frame = NULL;
     bool decoded = false;
 
-    ret = avcodec_send_packet(c_, pkt_);
+    ret = avcodec_send_packet(c_, pkt_->size > 0 ? pkt_ : NULL);
     if (ret < 0) {
       LOG_ERROR(std::string("avcodec_send_packet failed, ret = ") + av_err2str(ret));
       return ret;
@@ -223,7 +232,9 @@ private:
                 tmp_frame->data, key_frame);
     }
   _exit:
-    av_packet_unref(pkt_);
+    if (pkt_->size > 0) {
+      av_packet_unref(pkt_);
+    }
     return decoded ? 0 : -1;
   }
 
