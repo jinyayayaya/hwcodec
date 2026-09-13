@@ -90,7 +90,7 @@ public:
     free_decoder();
     const AVCodec *codec = NULL;
     bool is_rkmpp = (name_.find("rkmpp") != std::string::npos);
-    hwaccel_ = (device_type_ != AV_HWDEVICE_TYPE_NONE) || is_rkmpp;
+    hwaccel_ = device_type_ != AV_HWDEVICE_TYPE_NONE;
     int ret;
     if (!(codec = avcodec_find_decoder_by_name(name_.c_str()))) {
       LOG_ERROR(std::string("avcodec_find_decoder_by_name ") + name_ + " failed");
@@ -117,18 +117,16 @@ public:
     }
 
     if (hwaccel_) {
-      if (!is_rkmpp) {
-        ret =
-            av_hwdevice_ctx_create(&hw_device_ctx_, device_type_, NULL, NULL, 0);
-        if (ret < 0) {
-          LOG_ERROR(std::string("av_hwdevice_ctx_create failed, ret = ") + av_err2str(ret));
-          return -1;
-        }
-        c_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
-        if (!check_support()) {
-          LOG_ERROR(std::string("check_support failed"));
-          return -1;
-        }
+      ret =
+          av_hwdevice_ctx_create(&hw_device_ctx_, device_type_, NULL, NULL, 0);
+      if (ret < 0) {
+        LOG_ERROR(std::string("av_hwdevice_ctx_create failed, ret = ") + av_err2str(ret));
+        return -1;
+      }
+      c_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
+      if (!check_support()) {
+        LOG_ERROR(std::string("check_support failed"));
+        return -1;
       }
       if (!(sw_frame_ = av_frame_alloc())) {
         LOG_ERROR(std::string("av_frame_alloc failed"));
@@ -166,18 +164,12 @@ public:
 #endif
 
     if (!data || !length) {
-      pkt_->data = NULL;
-      pkt_->size = 0;
-      return do_decode(obj);
+      LOG_ERROR(std::string("illegal decode parameter"));
+      return -1;
     }
     pkt_->data = (uint8_t *)data;
     pkt_->size = length;
     ret = do_decode(obj);
-    if (ret != 0 && (name_.find("rkmpp") != std::string::npos)) {
-      pkt_->data = NULL;
-      pkt_->size = 0;
-      ret = do_decode(obj);
-    }
     return ret;
   }
 
@@ -185,7 +177,6 @@ private:
   int do_decode(const void *obj) {
     int ret;
     AVFrame *tmp_frame = NULL;
-    bool decoded = false;
 
     ret = avcodec_send_packet(c_, pkt_->size > 0 ? pkt_ : NULL);
     if (ret < 0) {
@@ -195,7 +186,9 @@ private:
     auto start = util::now();
     while (ret >= 0 && util::elapsed_ms(start) < ENCODE_TIMEOUT_MS) {
       if ((ret = avcodec_receive_frame(c_, frame_)) != 0) {
-        if (ret != AVERROR(EAGAIN)) {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+          ret = 0;
+        } else {
           LOG_ERROR(std::string("avcodec_receive_frame failed, ret = ") + av_err2str(ret));
         }
         goto _exit;
@@ -204,6 +197,7 @@ private:
       if (hwaccel_) {
         if (!frame_->hw_frames_ctx) {
           LOG_ERROR(std::string("hw_frames_ctx is NULL"));
+          ret = -1;
           goto _exit;
         }
         if ((ret = av_hwframe_transfer_data(sw_frame_, frame_, 0)) < 0) {
@@ -216,7 +210,6 @@ private:
       } else {
         tmp_frame = frame_;
       }
-      decoded = true;
 #ifdef CFG_PKG_TRACE
       out_++;
       LOG_DEBUG(std::string("delay DO: in:") + in_ + " out:" + out_);
@@ -235,7 +228,7 @@ private:
     if (pkt_->size > 0) {
       av_packet_unref(pkt_);
     }
-    return decoded ? 0 : -1;
+    return ret < 0 ? -1 : 0;
   }
 
   bool check_support() {
