@@ -116,8 +116,8 @@ public:
       c_->pkt_timebase = av_make_q(1, 30);
     }
 
-    if (hwaccel_) {
-      if (!is_rkmpp) {
+    if (hwaccel_ || is_rkmpp) {
+      if (hwaccel_) {
         ret =
             av_hwdevice_ctx_create(&hw_device_ctx_, device_type_, NULL, NULL, 0);
         if (ret < 0) {
@@ -166,18 +166,12 @@ public:
 #endif
 
     if (!data || !length) {
-      pkt_->data = NULL;
-      pkt_->size = 0;
-      return do_decode(obj);
+      LOG_ERROR(std::string("illegal decode parameter"));
+      return -1;
     }
     pkt_->data = (uint8_t *)data;
     pkt_->size = length;
     ret = do_decode(obj);
-    if (ret != 0 && (name_.find("rkmpp") != std::string::npos)) {
-      pkt_->data = NULL;
-      pkt_->size = 0;
-      ret = do_decode(obj);
-    }
     return ret;
   }
 
@@ -186,8 +180,10 @@ private:
     int ret;
     AVFrame *tmp_frame = NULL;
     bool decoded = false;
+    bool receive_eagain = false;
+    bool decode_error = false;
 
-    ret = avcodec_send_packet(c_, pkt_->size > 0 ? pkt_ : NULL);
+    ret = avcodec_send_packet(c_, pkt_);
     if (ret < 0) {
       LOG_ERROR(std::string("avcodec_send_packet failed, ret = ") + av_err2str(ret));
       return ret;
@@ -195,20 +191,32 @@ private:
     auto start = util::now();
     while (ret >= 0 && util::elapsed_ms(start) < ENCODE_TIMEOUT_MS) {
       if ((ret = avcodec_receive_frame(c_, frame_)) != 0) {
-        if (ret != AVERROR(EAGAIN)) {
+        if (ret == AVERROR(EAGAIN)) {
+          // RKMPP may consume a packet before a decoded frame is available.
+          receive_eagain = true;
+        } else {
           LOG_ERROR(std::string("avcodec_receive_frame failed, ret = ") + av_err2str(ret));
+          decode_error = true;
         }
         goto _exit;
       }
 
-      if (hwaccel_) {
-        if (!frame_->hw_frames_ctx) {
-          LOG_ERROR(std::string("hw_frames_ctx is NULL"));
+      if (frame_->format == AV_PIX_FMT_DRM_PRIME || hwaccel_) {
+        if (!sw_frame_) {
+          LOG_ERROR(std::string("sw_frame_ is NULL"));
+          decode_error = true;
           goto _exit;
         }
+        if (!frame_->hw_frames_ctx) {
+          LOG_ERROR(std::string("hw_frames_ctx is NULL"));
+          decode_error = true;
+          goto _exit;
+        }
+        av_frame_unref(sw_frame_);
         if ((ret = av_hwframe_transfer_data(sw_frame_, frame_, 0)) < 0) {
           LOG_ERROR(std::string("av_hwframe_transfer_data failed, ret = ") +
                     av_err2str(ret));
+          decode_error = true;
           goto _exit;
         }
 
@@ -230,12 +238,13 @@ private:
       callback_(obj, tmp_frame->width, tmp_frame->height,
                 (AVPixelFormat)tmp_frame->format, tmp_frame->linesize,
                 tmp_frame->data, key_frame);
+      if (tmp_frame == sw_frame_) {
+        av_frame_unref(sw_frame_);
+      }
     }
   _exit:
-    if (pkt_->size > 0) {
-      av_packet_unref(pkt_);
-    }
-    return decoded ? 0 : -1;
+    av_packet_unref(pkt_);
+    return !decode_error && (decoded || receive_eagain) ? 0 : -1;
   }
 
   bool check_support() {
