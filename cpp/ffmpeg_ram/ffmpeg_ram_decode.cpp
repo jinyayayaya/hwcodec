@@ -90,7 +90,7 @@ public:
     free_decoder();
     const AVCodec *codec = NULL;
     bool is_rkmpp = (name_.find("rkmpp") != std::string::npos);
-    hwaccel_ = (device_type_ != AV_HWDEVICE_TYPE_NONE) || is_rkmpp;
+    hwaccel_ = device_type_ != AV_HWDEVICE_TYPE_NONE;
     int ret;
     if (!(codec = avcodec_find_decoder_by_name(name_.c_str()))) {
       LOG_ERROR(std::string("avcodec_find_decoder_by_name ") + name_ + " failed");
@@ -180,7 +180,7 @@ private:
     int ret;
     AVFrame *tmp_frame = NULL;
     bool decoded = false;
-    bool receive_eagain = false;
+    bool receive_no_frame = false;
     bool decode_error = false;
 
     ret = avcodec_send_packet(c_, pkt_);
@@ -191,9 +191,9 @@ private:
     auto start = util::now();
     while (ret >= 0 && util::elapsed_ms(start) < ENCODE_TIMEOUT_MS) {
       if ((ret = avcodec_receive_frame(c_, frame_)) != 0) {
-        if (ret == AVERROR(EAGAIN)) {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
           // RKMPP may consume a packet before a decoded frame is available.
-          receive_eagain = true;
+          receive_no_frame = true;
         } else {
           LOG_ERROR(std::string("avcodec_receive_frame failed, ret = ") + av_err2str(ret));
           decode_error = true;
@@ -244,7 +244,7 @@ private:
     }
   _exit:
     av_packet_unref(pkt_);
-    return !decode_error && (decoded || receive_eagain) ? 0 : -1;
+    return !decode_error && (decoded || receive_no_frame) ? 0 : -1;
   }
 
   bool check_support() {
