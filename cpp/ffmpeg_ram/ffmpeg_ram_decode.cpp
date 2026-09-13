@@ -221,8 +221,8 @@ private:
       out_++;
       LOG_DEBUG(std::string("delay DO: in:") + in_ + " out:" + out_);
 #endif
-#if FF_API_FRAME_KEY
-      int key_frame = frame_->flags & AV_FRAME_FLAG_KEY;
+#if defined(AV_FRAME_FLAG_KEY)
+      int key_frame = (frame_->flags & AV_FRAME_FLAG_KEY) ? 1 : 0;
 #else
       int key_frame = frame_->key_frame;
 #endif
